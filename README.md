@@ -5,7 +5,7 @@
 - `biopac_sync.py`: 将BIOPAC导出的csv文件转换为标准格式
 - `visualization.py`: 对齐并可视化多通道生理信号
 
-## 环境要求
+## 环境
 ```bash
 pip install pandas numpy matplotlib
 ```
