@@ -1,7 +1,7 @@
 # physio-signal-tools
 
 ## 概述
-仓库包含两个Python脚本，用于处理和可视化生理信号数据：
+此仓库包含两个Python脚本，用于处理和可视化生理信号数据：
 - `biopac_sync.py`: 将BIOPAC导出的csv文件转换为标准格式
 - `visualization.py`: 对齐并可视化多通道生理信号
 
