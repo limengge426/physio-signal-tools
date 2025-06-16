@@ -40,7 +40,6 @@ python visualization.py
 
 **输出：**
 - 在屏幕显示对齐后的多通道波形图
-- 保存为`combined_excluding_sensors.png`,`subplots_excluding_sensors.png`,`channels_grid.png`
 
 ## 工作流程
 
@@ -61,6 +60,11 @@ project/
 │   ├── hr.csv
 │   └── ...
 ├── combined_excluding_sensors.png # 真值+血氧总图
+├── combined_excluding_sensors_no_filter.png # 真值+血氧总图（滤波前）
 ├── subplots_excluding_sensors.png # 真值+血氧拼接子图
-└── channels_grid.png # 可穿戴总图
+├── subplots_excluding_sensors_no_filter.png # 真值+血氧拼接子图（滤波前）
+├── channels_grid.png # 可穿戴总图
+├── channels_grid_no_filter.png # 可穿戴总图（滤波前）
+├── psd_sensors.png # 可穿戴PSD（按通道）
+└── psd_sensor_grid.png # 可穿戴PSD（聚合）
 ```
