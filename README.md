@@ -2,7 +2,7 @@
 
 ## 概述
 此仓库包含两个Python脚本，用于处理和可视化生理信号数据：
-- `biopac_sync.py`: 将BIOPAC导出的csv文件转换为标准格式
+- `biopac_sync.py`: 将BIOPAC导出的csv文件转换为标准格式并按照时间戳切分
 - `visualization.py`: 对齐并可视化多通道生理信号
 
 ## 环境
@@ -20,8 +20,9 @@ python biopac_sync.py input_file.csv
 ```
 
 **输出：**
-- 为每个通道生成独立的CSV文件（如`bp.csv`, `hr.csv`等）
+- 为每个通道生成独立的csv文件（如`bp.csv`, `hr.csv`等）
 - 每个文件包含两列：`timestamp`（Unix时间戳）和信号值
+- 每一段实验生成独立的csv文件（如`bp-1.csv`, `bp-2.csv`等）
 
 ### 2. 数据可视化 (`visualization.py`)
 
@@ -56,8 +57,13 @@ project/
 ├── visualization.py    # 可视化脚本
 ├── input_data.csv      # 原始BIOPAC数据
 ├── output/             # 转换后的CSV文件
-│   ├── bp.csv
-│   ├── hr.csv
+│   ├── bp-1.csv
+│   ├── bp-2.csv
+│   ├── bp-3.csv
+│   ├── ...
+│   ├── hr-1.csv
+│   ├── hr-2.csv
+│   ├── hr-3.csv
 │   └── ...
 ├── combined_excluding_sensors.png # 真值+血氧总图
 ├── combined_excluding_sensors_no_filter.png # 真值+血氧总图（滤波前）
