@@ -92,7 +92,7 @@ def create_safe_filename(name):
     safe = re.sub(r'[^\w\s-]','', name)
     safe = re.sub(r'[-\s]+','_', safe)
     abbrev = {
-        '血压':'bp','心输出量':'cardiac_output','全身血管阻力':'systemic_vascular_resistance','心脏指数':'cardiac_index',
+        'RSP':'rsp','血压':'bp','心输出量':'cardiac_output','全身血管阻力':'systemic_vascular_resistance','心脏指数':'cardiac_index',
         'Systolic_BP':'systolic_bp','Diastolic_BP':'diastolic_bp','Mean_BP':'mean_bp','Heart_Rate':'hr'
     }
     for k,v in abbrev.items():
@@ -101,9 +101,111 @@ def create_safe_filename(name):
     return safe.lower()
 
 
-def convert_biopac_to_csv(input_file, output_dir='output', utc_offset=8):
+def get_segment_timestamps(input_dir):
+    """
+    获取所有数字命名文件夹中的时间段信息
+    返回：[(segment_num, start_ts, end_ts), ...]
+    """
+    segments = []
+    
+    # 查找所有数字命名的文件夹
+    for folder in os.listdir(input_dir):
+        folder_path = os.path.join(input_dir, folder)
+        if os.path.isdir(folder_path) and folder.isdigit():
+            # 检查Camera1/timestamps.csv是否存在
+            timestamps_file = os.path.join(folder_path, 'Camera1', 'timestamps.csv')
+            if os.path.exists(timestamps_file):
+                try:
+                    with open(timestamps_file, 'r', encoding='utf-8') as f:
+                        reader = csv.DictReader(f)
+                        timestamps = []
+                        for row in reader:
+                            if 'timestamp' in row:  # 确保timestamp列存在
+                                try:
+                                    timestamps.append(float(row['timestamp']))
+                                except (ValueError, KeyError):
+                                    pass
+                    
+                    if len(timestamps) >= 2:
+                        start_ts = timestamps[0]
+                        end_ts = timestamps[-1]
+                        segments.append((int(folder), start_ts, end_ts))
+                        print(f"Segment {folder}: {start_ts:.3f} - {end_ts:.3f} ({end_ts-start_ts:.1f}s)")
+                except Exception as e:
+                    print(f"Error reading timestamps from {timestamps_file}: {e}")
+    
+    # 按段号排序
+    segments.sort(key=lambda x: x[0])
+    return segments
+
+
+def segment_csv_files(output_dir, input_dir, segments):
+    """
+    根据时间段切分已生成的标准CSV文件
+    """
+    if not segments:
+        print("No segments found, skipping segmentation.")
+        return
+    
+    print(f"\nSegmenting files based on {len(segments)} time periods...")
+    
+    # 查找所有生成的CSV文件
+    csv_files = [f for f in os.listdir(output_dir) if f.endswith('.csv')]
+    
+    for csv_file in csv_files:
+        base_name = csv_file[:-4]  # 去除.csv后缀
+        csv_path = os.path.join(output_dir, csv_file)
+        
+        print(f"\nProcessing {csv_file}...")
+        
+        # 读取整个CSV文件
+        with open(csv_path, 'r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            rows = list(reader)
+            
+        if not rows:
+            print(f"  No data in {csv_file}, skipping.")
+            continue
+        
+        # 获取列名
+        fieldnames = reader.fieldnames
+        
+        # 对每个时间段进行切分
+        for seg_num, start_ts, end_ts in segments:
+            # 筛选在时间段内的行
+            segment_rows = []
+            for row in rows:
+                try:
+                    ts = float(row['timestamp'])
+                    if start_ts <= ts <= end_ts:
+                        segment_rows.append(row)
+                except (ValueError, KeyError):
+                    pass
+            
+            if segment_rows:
+                # 保存切分后的文件
+                segment_filename = f"{base_name}-{seg_num}.csv"
+                segment_path = os.path.join(output_dir, segment_filename)
+                
+                with open(segment_path, 'w', newline='', encoding='utf-8') as f:
+                    writer = csv.DictWriter(f, fieldnames=fieldnames)
+                    writer.writeheader()
+                    writer.writerows(segment_rows)
+                
+                print(f"  Segment {seg_num}: {len(segment_rows)} rows -> {segment_filename}")
+            else:
+                print(f"  Segment {seg_num}: No data in time range")
+
+
+def convert_biopac_to_csv(input_file, output_dir='output', utc_offset=8, auto_segment=True):
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
+    
+    # 获取输入文件所在目录
+    input_dir = os.path.dirname(input_file)
+    if not input_dir:
+        input_dir = '.'
+    
     with open(input_file,'r',encoding='utf-8-sig') as f:
         lines = f.readlines()
     header = parse_biopac_header(lines, utc_offset)
@@ -135,8 +237,21 @@ def convert_biopac_to_csv(input_file, output_dir='output', utc_offset=8):
     for f in files.values(): f.close()
     print(f"Conversion complete! Processed {count} rows")
     print(f"Output files saved in: {output_dir}/")
+    
+    # 自动进行时间段切分
+    if auto_segment:
+        segments = get_segment_timestamps(input_dir)
+        if segments:
+            segment_csv_files(output_dir, input_dir, segments)
+        else:
+            print("\nNo numbered folders with timestamps found for segmentation.")
+
 
 if __name__=='__main__':
     p=argparse.ArgumentParser()
-    p.add_argument('input_file'); p.add_argument('-o','--output',default='output'); p.add_argument('-t','--timezone',type=int,default=8)
-    a=p.parse_args(); convert_biopac_to_csv(a.input_file,a.output,a.timezone)
+    p.add_argument('input_file', help='Biopac exported CSV file')
+    p.add_argument('-o','--output',default='output', help='Output directory')
+    p.add_argument('-t','--timezone',type=int,default=8, help='UTC offset in hours')
+    p.add_argument('--no-segment', action='store_true', help='Disable automatic segmentation')
+    a=p.parse_args()
+    convert_biopac_to_csv(a.input_file, a.output, a.timezone, auto_segment=not a.no_segment)
