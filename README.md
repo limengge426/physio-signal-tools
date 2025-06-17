@@ -57,13 +57,14 @@ project/
 ├── visualization.py    # 可视化脚本
 ├── input_data.csv      # 原始BIOPAC数据
 ├── output/             # 转换后的CSV文件
+│   ├── bp.csv
 │   ├── bp-1.csv
 │   ├── bp-2.csv
 │   ├── bp-3.csv
 │   ├── ...
+│   ├── hr.csv
 │   ├── hr-1.csv
 │   ├── hr-2.csv
-│   ├── hr-3.csv
 │   └── ...
 ├── combined_excluding_sensors.png # 真值+血氧总图
 ├── combined_excluding_sensors_no_filter.png # 真值+血氧总图（滤波前）
