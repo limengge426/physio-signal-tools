@@ -246,6 +246,144 @@ def plot_channels_separately(dfs_filt, save=True):
 
             plt.show()
             plt.close()
+    
+
+
+# —— 带滤波的五个传感器每个通道叠加总图 —— #
+def plot_all_channels_overlay_filtered(dfs_filt, save=True):
+    """
+    绘制五个传感器的所有通道叠加图（带滤波），每个通道(red/ir/green)在一个子图中显示所有传感器的信号
+    """
+    sensor_mapping = {
+        'sensor1': 'wrist',
+        'sensor2': 'nose', 
+        'sensor3': 'finger',
+        'sensor4': 'forearm',
+        'sensor5': 'ear'
+    }
+    
+    # 获取传感器数据并进行深拷贝以避免修改原数据
+    import copy
+    sensor_dfs = OrderedDict()
+    for name, df in dfs_filt.items():
+        prefix = name.split('-')[0]
+        if prefix in sensor_mapping and not df.empty:
+            sensor_dfs[prefix] = copy.deepcopy(df.sort_values('timestamp'))
+    
+    if not sensor_dfs:
+        print("No sensor data found for filtered overlay plot.")
+        return
+    
+    # 对每个传感器数据进行滤波处理
+    print("Applying bandpass filter to sensor data...")
+    for prefix, df in sensor_dfs.items():
+        if df.empty:
+            continue
+            
+        ts = df['timestamp'].values
+        # 只保留唯一的时间戳，去掉重复值
+        tsu = np.unique(ts)
+        if len(tsu) < 2:
+            print(f"{prefix}: 没有足够不同时间戳，跳过滤波")
+            continue
+            
+        # 计算相邻不同时间戳的中位数
+        dt = np.median(np.diff(tsu))
+        if dt <= 0:
+            print(f"{prefix}: 时间戳异常 (dt={dt:.6f}), 跳过滤波")
+            continue
+
+        fs = 1.0 / dt
+        print(f"{prefix}: 采样率 ≈ {fs:.1f} Hz, Nyquist={fs/2:.1f} Hz")
+
+        # 检查采样率是否足够高以支持滤波
+        nyquist = fs / 2
+        if nyquist <= 1.5:  # Need nyquist > 1.5 Hz to safely filter at 0.5-3 Hz
+            print(f"{prefix}: 采样率太低 (Nyquist={nyquist:.1f} Hz <= 1.5 Hz)，跳过滤波")
+            continue
+        
+        # 对于低采样率信号，调整滤波参数
+        if fs < 10:  # 如果采样率低于 10 Hz
+            # 确保高频截止不超过 Nyquist 频率的 0.9 倍
+            highcut = min(3.0, 0.9 * nyquist)
+            print(f"{prefix}: 调整滤波范围为 0.5-{highcut:.1f} Hz")
+        else:
+            highcut = 3.0
+
+        # 对各个通道进行滤波
+        for col in df.columns:
+            if col == 'timestamp':
+                continue
+            try:
+                sensor_dfs[prefix][col] = bandpass_filter(
+                    df[col].values,
+                    lowcut=0.5,
+                    highcut=highcut,
+                    fs=fs)
+                print(f"  {prefix} {col}: 滤波成功")
+            except Exception as e:
+                print(f"  {prefix} {col}: 滤波失败 - {str(e)}")
+    
+    # 计算全局时间起点
+    all_ts = np.concatenate([df['timestamp'].values for df in sensor_dfs.values()])
+    t0 = all_ts.min()
+    
+    channels = ['red', 'ir', 'green']
+    colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FECA57']  # 为5个传感器定义不同颜色
+    
+    # 创建3x1的子图布局
+    fig, axes = plt.subplots(3, 1, figsize=(16, 12), sharex=True)
+    
+    for ch_idx, channel in enumerate(channels):
+        ax = axes[ch_idx]
+        
+        # 为每个通道绘制所有传感器的数据
+        for sensor_idx, (prefix, df) in enumerate(sensor_dfs.items()):
+            part_name = sensor_mapping[prefix]
+            
+            # 检查是否有该通道的数据
+            col_idx = ch_idx + 1  # red=1, ir=2, green=3
+            if df.shape[1] <= col_idx:
+                continue
+                
+            # 获取时间和信号数据
+            x = df['timestamp'].values - t0
+            y = df.iloc[:, col_idx].values
+            
+            # 为了更好的可视化效果，可以对信号进行归一化
+            if len(y) > 0:
+                y_normalized = (y - np.min(y)) / (np.max(y) - np.min(y)) if np.max(y) != np.min(y) else y
+                
+                # 绘制信号线
+                ax.plot(x, y_normalized, 
+                       color=colors[sensor_idx % len(colors)], 
+                       linewidth=1.5, 
+                       alpha=0.8, 
+                       label=f'{part_name}')
+        
+        # 设置子图属性
+        ax.set_title(f'{channel.upper()} Channel - All Sensors Overlay (Filtered 0.5-3Hz)', 
+                    fontsize=14, fontweight='bold')
+        ax.set_ylabel('Normalized Signal', fontsize=12)
+        ax.grid(True, alpha=0.3)
+        ax.legend(bbox_to_anchor=(1.02, 1), loc='upper left')
+        
+        # 设置y轴范围
+        ax.set_ylim(-0.1, 1.1)
+    
+    # 设置x轴标签
+    axes[-1].set_xlabel('Time since window start (s)', fontsize=12)
+    
+    # 设置总标题
+    plt.suptitle('Multi-Sensor Channel Overlay Visualization (Filtered)', 
+                fontsize=16, fontweight='bold')
+    plt.tight_layout(rect=[0, 0, 0.85, 0.96])
+    
+    if save:
+        plt.savefig('all_channels_overlay_filtered.png', dpi=300, bbox_inches='tight')
+        print("Saved: all_channels_overlay_filtered.png")
+    
+    plt.show()
 
 
 # —— PSD 频谱图 —— #
@@ -456,13 +594,14 @@ def main():
         print("Renamed to: channels_grid_no_filter.png")
     
     # 无滤波的真值+血氧总图
+    '''
     if args.mode in ['combined', 'both']:
         print("\n-- Combined View (No Filter) --")
         plot_combined(dfs_original, save=True)
         if os.path.exists("combined_excluding_sensors.png"):
             os.rename("combined_excluding_sensors.png", "combined_excluding_sensors_no_filter.png")
             print("Renamed to: combined_excluding_sensors_no_filter.png")
-    
+    '''
     # 无滤波的真值+血氧拼接子图
     if args.mode in ['subplots', 'both']:
         print("\n-- Subplots View (No Filter) --")
@@ -472,29 +611,35 @@ def main():
             print("Renamed to: subplots_excluding_sensors_no_filter.png")
     
     # 再绘制滤波后的图
-    print("\n\n====== WITH FILTERING ======")
+    #print("\n\n====== WITH FILTERING ======")
     
     # 可穿戴总图
-    print("\n-- Grid Channel View (Filtered) --")
-    plot_channels_grid(dfs_filt)
+    #print("\n-- Grid Channel View (Filtered) --")
+    #plot_channels_grid(dfs_filt)
 
-    # 可穿戴子图
+    # 可穿戴子图 ###
     #print("\n-- Individual Channel Plots --")
     #plot_channels_separately(dfs_filt)
 
     # 真值+血氧总图
-    if args.mode in ['combined', 'both']:
-        print("\n-- Combined View (Filtered) --")
-        plot_combined(dfs_filt)
+    #if args.mode in ['combined', 'both']:
+    #    print("\n-- Combined View (Filtered) --")
+    #    plot_combined(dfs_filt)
 
     # 真值+血氧拼接子图
-    if args.mode in ['subplots', 'both']:
-        print("\n-- Subplots View (Filtered) --")
-        plot_subplots(dfs_filt)
+    #if args.mode in ['subplots', 'both']:
+    #    print("\n-- Subplots View (Filtered) --")
+    #    plot_subplots(dfs_filt)
     
+    print("\n-- All Channels Overlay View --")
+    plot_all_channels_overlay_filtered(dfs_original, save=True)
+    if os.path.exists("all_channels_overlay.png"):
+        os.rename("all_channels_overlay.png", "all_channels_overlay_no_filter.png")
+        print("Renamed to: all_channels_overlay_no_filter.png")
+
     # PSD 频谱分析
-    print("\n-- PSD Analysis --")
-    plot_psd_analysis(dfs_filt)
+    #print("\n-- PSD Analysis --")
+    #plot_psd_analysis(dfs_filt)
 
     print("\nDone!")
 
