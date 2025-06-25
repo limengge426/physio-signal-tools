@@ -243,6 +243,68 @@ def segment_csv_files(output_dir, input_dir, segments):
                 print(f"  Segment {seg_num}: No data in time range")
 
 
+def move_biopac_files_to_segments(output_dir, parent_dir):
+    """将output文件夹中的分段Biopac文件移动到对应段的Biopac文件夹"""
+    print("\n" + "="*50)
+    print("移动Biopac分段文件到对应文件夹...")
+    print("="*50)
+    
+    # 查找所有带段号后缀的文件
+    biopac_segment_files = []
+    for file in os.listdir(output_dir):
+        if file.endswith('.csv') and '-' in file:
+            # 检查是否是分段文件（格式：name-数字.csv）
+            parts = file.split('-')
+            if len(parts) == 2:
+                name_part = parts[0]
+                number_part = parts[1].replace('.csv', '')
+                if number_part.isdigit():
+                    segment_num = int(number_part)
+                    if 1 <= segment_num <= 11:
+                        # 排除sensor和已知的非Biopac文件
+                        if not name_part.startswith('sensor') and name_part not in ['bvp', 'spo2']:
+                            biopac_segment_files.append((file, segment_num, name_part))
+    
+    if not biopac_segment_files:
+        print("没有找到需要移动的Biopac分段文件")
+        return
+    
+    print(f"找到 {len(biopac_segment_files)} 个Biopac分段文件需要移动")
+    
+    moved_count = 0
+    for file, segment_num, name_part in biopac_segment_files:
+        # 源文件路径
+        source_path = os.path.join(output_dir, file)
+        
+        # 目标段文件夹
+        segment_dir = os.path.join(parent_dir, str(segment_num))
+        
+        # 创建段文件夹（如果不存在）
+        if not os.path.exists(segment_dir):
+            os.makedirs(segment_dir)
+            print(f"  创建段文件夹: {segment_dir}")
+        
+        # 创建Biopac子文件夹（如果不存在）
+        biopac_dir = os.path.join(segment_dir, 'Biopac')
+        if not os.path.exists(biopac_dir):
+            os.makedirs(biopac_dir)
+            print(f"  创建Biopac文件夹: {biopac_dir}")
+        
+        # 目标文件路径（去掉段号后缀）
+        target_filename = f"{name_part}.csv"
+        target_path = os.path.join(biopac_dir, target_filename)
+        
+        # 移动文件
+        try:
+            os.rename(source_path, target_path)
+            print(f"  移动: {file} -> {segment_num}/Biopac/{target_filename}")
+            moved_count += 1
+        except Exception as e:
+            print(f"  移动失败 {file}: {str(e)}")
+    
+    print(f"\n成功移动了 {moved_count} 个文件")
+
+
 def convert_biopac_to_csv(input_file, output_dir='output', utc_offset=8, auto_segment=True):
     """转换Biopac数据到CSV格式"""
     if not os.path.exists(output_dir):
@@ -290,6 +352,8 @@ def convert_biopac_to_csv(input_file, output_dir='output', utc_offset=8, auto_se
         segments = get_segment_timestamps(input_dir)
         if segments:
             segment_csv_files(output_dir, input_dir, segments)
+            # 新增：移动Biopac分段文件到对应文件夹
+            move_biopac_files_to_segments(output_dir, input_dir)
         else:
             print("\nNo numbered folders with timestamps found for segmentation.")
 
@@ -908,9 +972,13 @@ def run_visualization(base_dir='output', mode='both'):
     # 保存当前工作目录
     original_cwd = os.getcwd()
     
-    # 获取Biopac数据文件（output文件夹中的直接数据）
-    biopac_files = [f for f in os.listdir(base_dir) 
-                    if f.endswith('.csv') and not f.startswith('sensor') and '-' not in f]
+    # 获取Biopac数据文件（现在从段文件夹的Biopac子文件夹读取）
+    def get_biopac_files_for_segment(segment_dir):
+        """获取指定段的Biopac文件"""
+        biopac_path = os.path.join(segment_dir, 'Biopac')
+        if os.path.exists(biopac_path):
+            return [f for f in os.listdir(biopac_path) if f.endswith('.csv')]
+        return []
     
     # 2. 处理每个段的数据（分别输入时间戳）
     segments_processed = 0
@@ -935,16 +1003,19 @@ def run_visualization(base_dir='output', mode='both'):
         if not os.path.exists(segment_vis_dir):
             os.makedirs(segment_vis_dir)
         
-        # 2.1 处理Biopac数据（为每个段生成）
+        # 2.1 处理Biopac数据（从段文件夹的Biopac子文件夹读取）
+        biopac_files = get_biopac_files_for_segment(segment_dir)
         if biopac_files:
             print(f"\n处理段 {segment} - Biopac数据...")
             
             biopac_dfs = {}
+            biopac_source_path = os.path.join(segment_dir, 'Biopac')
             for file in biopac_files:
                 name = file[:-4]
                 try:
-                    df = pd.read_csv(os.path.join(base_dir, file))
+                    df = pd.read_csv(os.path.join(biopac_source_path, file))
                     biopac_dfs[name] = df.dropna().reset_index(drop=True)
+                    print(f"  Loaded {file} with {len(df)} rows")
                 except Exception as e:
                     print(f"Error reading {file}: {e}")
             
@@ -997,7 +1068,7 @@ def run_visualization(base_dir='output', mode='both'):
                 else:
                     print(f"  段 {segment} Biopac数据在指定时间窗口内无数据")
         
-        # 2.2 处理Oximeter数据
+        # 2.2 处理Oximeter数据（移除滤波图）
         oximeter_source_path = os.path.join(segment_dir, 'Oximeter')
         if os.path.exists(oximeter_source_path):
             print(f"\n处理段 {segment} - Oximeter数据...")
@@ -1022,9 +1093,6 @@ def run_visualization(base_dir='output', mode='both'):
                     # 检查过滤后是否有数据
                     has_data = any(not df.empty for df in oximeter_filt.values())
                     if has_data:
-                        # 应用滤波
-                        apply_filtering(oximeter_filt)
-                        
                         # 创建Oximeter子文件夹
                         oximeter_vis_dir = os.path.join(segment_vis_dir, 'Oximeter')
                         if not os.path.exists(oximeter_vis_dir):
@@ -1032,7 +1100,7 @@ def run_visualization(base_dir='output', mode='both'):
                         
                         os.chdir(oximeter_vis_dir)
                         
-                        # 生成Oximeter图表
+                        # 生成Oximeter图表（只生成无滤波图）
                         print(f"  生成段 {segment} Oximeter图表...")
                         
                         # 无滤波图
@@ -1043,15 +1111,6 @@ def run_visualization(base_dir='output', mode='both'):
                         plot_subplots(oximeter_original, save=True)
                         if os.path.exists("subplots_excluding_sensors.png"):
                             os.rename("subplots_excluding_sensors.png", f"oximeter_subplots_no_filter_seg{segment}.png")
-                        
-                        # 滤波图
-                        plot_combined(oximeter_filt, save=True)
-                        if os.path.exists("combined_excluding_sensors.png"):
-                            os.rename("combined_excluding_sensors.png", f"oximeter_combined_filtered_seg{segment}.png")
-                        
-                        plot_subplots(oximeter_filt, save=True)
-                        if os.path.exists("subplots_excluding_sensors.png"):
-                            os.rename("subplots_excluding_sensors.png", f"oximeter_subplots_filtered_seg{segment}.png")
                         
                         os.chdir(original_cwd)
                         print(f"  段 {segment} Oximeter图表已保存至: {oximeter_vis_dir}")
