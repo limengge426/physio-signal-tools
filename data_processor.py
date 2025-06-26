@@ -15,10 +15,10 @@ import copy
 
 # ==================== 全局配置 ====================
 sensor_mapping = {
-    'sensor1': 'wrist',
+    'sensor1': 'forearm',
     'sensor2': 'nose',
     'sensor3': 'finger',
-    'sensor4': 'forearm',
+    'sensor4': 'wrist',
     'sensor5': 'ear'
 }
 
