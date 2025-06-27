@@ -15,10 +15,10 @@ import copy
 
 # ==================== 全局配置 ====================
 sensor_mapping = {
-    'sensor1': 'forearm',
+    'sensor1': 'wrist',
     'sensor2': 'nose',
     'sensor3': 'finger',
-    'sensor4': 'wrist',
+    'sensor4': 'forearm',
     'sensor5': 'ear'
 }
 
@@ -397,7 +397,7 @@ def filter_window(dfs, start_ts, end_ts):
 
 
 def plot_biopac_distribution_analysis(dfs_filt, save=True):
-    """分析真值数据分布的拼接柱状图"""
+    """分析真值数据分布的拼接柱状图 - 按指定顺序排列"""
     # 获取非sensor数据
     biopac_data = {
         name: df for name, df in dfs_filt.items()
@@ -408,34 +408,49 @@ def plot_biopac_distribution_analysis(dfs_filt, save=True):
         print("No Biopac data found for distribution analysis.")
         return
     
-    n_datasets = len(biopac_data)
+    # 定义显示顺序（按列排列）
+    # 第一列：bp, systolic_bp, diastolic_bp
+    # 第二列：mean_bp, hr, rsp  
+    # 第三列：cardiac_index, cardiac_output, systemic_vascular_resistance
+    display_order = [
+        # 第一列
+        'bp', 'systolic_bp', 'diastolic_bp',
+        # 第二列
+        'mean_bp', 'hr', 'rsp',
+        # 第三列
+        'cardiac_index', 'cardiac_output', 'systemic_vascular_resistance'
+    ]
+    
+    # 根据可用数据和显示顺序创建有序列表
+    ordered_data = []
+    for key in display_order:
+        if key in biopac_data:
+            ordered_data.append((key, biopac_data[key]))
+    
+    # 添加任何不在预定义顺序中的数据
+    for key, df in biopac_data.items():
+        if key not in display_order:
+            ordered_data.append((key, df))
+    
+    n_datasets = len(ordered_data)
     if n_datasets == 0:
         return
     
-    # 计算子图布局
-    if n_datasets <= 3:
-        rows, cols = 1, n_datasets
-        figsize = (6*cols, 5)
-    elif n_datasets <= 6:
-        rows, cols = 2, 3
-        figsize = (18, 10)
-    else:
-        rows, cols = 3, 3
-        figsize = (18, 15)
+    # 设置为3列布局
+    cols = 3
+    rows = math.ceil(n_datasets / cols)
+    figsize = (18, 5 * rows)
     
     fig, axes = plt.subplots(rows, cols, figsize=figsize)
     
     # 确保axes是数组格式
-    if n_datasets == 1:
-        axes = [axes]
-    elif rows == 1:
-        axes = axes
-    else:
-        axes = axes.flatten()
+    if rows == 1:
+        axes = axes.reshape(1, -1) if n_datasets > 1 else [axes]
+    axes = axes.flatten()
     
-    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2']
+    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#17becf', '#bcbd22']
     
-    for idx, (name, df) in enumerate(biopac_data.items()):
+    for idx, (name, df) in enumerate(ordered_data):
         ax = axes[idx]
         
         # 获取数据列（第二列通常是数值列）
@@ -496,6 +511,110 @@ def plot_biopac_distribution_analysis(dfs_filt, save=True):
     if save:
         plt.savefig('biopac_distribution_analysis.png', dpi=300, bbox_inches='tight')
         print("Saved: biopac_distribution_analysis.png")
+    
+    plt.show()
+
+
+def plot_oximeter_distribution_analysis(dfs_filt, save=True):
+    """分析Oximeter数据分布的拼接柱状图"""
+    # 获取Oximeter相关数据（非sensor数据）
+    oximeter_data = {
+        name: df for name, df in dfs_filt.items()
+        if name.split('-')[0] not in sensor_mapping and not df.empty
+    }
+    
+    if not oximeter_data:
+        print("No Oximeter data found for distribution analysis.")
+        return
+    
+    n_datasets = len(oximeter_data)
+    if n_datasets == 0:
+        return
+    
+    # 计算子图布局
+    if n_datasets <= 3:
+        rows, cols = 1, n_datasets
+        figsize = (6*cols, 5)
+    elif n_datasets <= 6:
+        rows, cols = 2, 3
+        figsize = (18, 10)
+    else:
+        rows, cols = 3, 3
+        figsize = (18, 15)
+    
+    fig, axes = plt.subplots(rows, cols, figsize=figsize)
+    
+    # 确保axes是数组格式
+    if n_datasets == 1:
+        axes = [axes]
+    elif rows == 1:
+        axes = axes
+    else:
+        axes = axes.flatten()
+    
+    colors = ['#ff6b6b', '#4ecdc4', '#45b7d1', '#96ceb4', '#feca57', '#ff9ff3', '#54a0ff']
+    
+    for idx, (name, df) in enumerate(oximeter_data.items()):
+        ax = axes[idx]
+        
+        # 获取数据列（第二列通常是数值列）
+        if df.shape[1] > 1:
+            data_column = df.iloc[:, 1].values
+            
+            # 移除异常值（使用IQR方法）
+            Q1 = np.percentile(data_column, 25)
+            Q3 = np.percentile(data_column, 75)
+            IQR = Q3 - Q1
+            lower_bound = Q1 - 1.5 * IQR
+            upper_bound = Q3 + 1.5 * IQR
+            
+            # 过滤数据
+            filtered_data = data_column[(data_column >= lower_bound) & (data_column <= upper_bound)]
+            
+            # 生成柱状图
+            n_bins = min(30, max(10, int(np.sqrt(len(filtered_data)))))
+            counts, bins, patches = ax.hist(filtered_data, bins=n_bins, 
+                                          color=colors[idx % len(colors)], 
+                                          alpha=0.7, edgecolor='black', linewidth=0.5)
+            
+            # 设置标题和标签
+            clean_name = name.replace('_', ' ').title()
+            ax.set_title(f'Distribution of {clean_name}', fontsize=12, fontweight='bold')
+            ax.set_xlabel('Value', fontsize=10)
+            ax.set_ylabel('Number', fontsize=10)
+            ax.grid(True, alpha=0.3)
+            
+            # 添加统计信息
+            mean_val = np.mean(filtered_data)
+            std_val = np.std(filtered_data)
+            median_val = np.median(filtered_data)
+            
+            # 在图上添加垂直线显示统计信息
+            ax.axvline(mean_val, color='red', linestyle='--', alpha=0.8, linewidth=2, label=f'Mean: {mean_val:.2f}')
+            ax.axvline(median_val, color='green', linestyle='--', alpha=0.8, linewidth=2, label=f'Median: {median_val:.2f}')
+            
+            # 添加文本框显示统计信息
+            stats_text = f'N: {len(filtered_data)}\nMean: {mean_val:.2f}\nStd: {std_val:.2f}\nMedian: {median_val:.2f}'
+            ax.text(0.98, 0.98, stats_text, transform=ax.transAxes, 
+                   fontsize=9, verticalalignment='top', horizontalalignment='right',
+                   bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+            
+            # 添加图例
+            ax.legend(loc='upper left', fontsize=8)
+            
+            print(f"  {name}: {len(filtered_data)} data points, Mean={mean_val:.2f}, Std={std_val:.2f}")
+    
+    # 隐藏多余的子图
+    for idx in range(n_datasets, len(axes)):
+        axes[idx].axis('off')
+    
+    # 设置总标题
+    plt.suptitle('Oximeter Data Distribution Analysis', fontsize=16, fontweight='bold', y=0.98)
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    
+    if save:
+        plt.savefig('oximeter_distribution_analysis.png', dpi=300, bbox_inches='tight')
+        print("Saved: oximeter_distribution_analysis.png")
     
     plt.show()
 
@@ -1100,8 +1219,13 @@ def run_visualization(base_dir='output', mode='both'):
                         
                         os.chdir(oximeter_vis_dir)
                         
-                        # 生成Oximeter图表（只生成无滤波图）
+                        # 生成Oximeter图表（只生成无滤波图 + 分布分析图）
                         print(f"  生成段 {segment} Oximeter图表...")
+                        
+                        # 新增：分布分析图
+                        plot_oximeter_distribution_analysis(oximeter_original, save=True)
+                        if os.path.exists("oximeter_distribution_analysis.png"):
+                            os.rename("oximeter_distribution_analysis.png", f"oximeter_distribution_analysis_seg{segment}.png")
                         
                         # 无滤波图
                         plot_combined(oximeter_original, save=True)
