@@ -15,10 +15,10 @@ import copy
 
 # ==================== 全局配置 ====================
 sensor_mapping = {
-    'sensor1': 'wrist',
+    'sensor1': 'forearm',
     'sensor2': 'nose',
     'sensor3': 'finger',
-    'sensor4': 'forearm',
+    'sensor4': 'wrist',
     'sensor5': 'ear'
 }
 
@@ -879,7 +879,7 @@ def plot_all_channels_overlay_filtered(dfs_filt, save=True):
     t0 = all_ts.min()
     
     channels = ['red', 'ir', 'green']
-    colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FECA57']
+    colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#FECA57']
     
     # 创建3x1的子图布局
     fig, axes = plt.subplots(3, 1, figsize=(16, 12), sharex=True)
@@ -1159,15 +1159,15 @@ def run_visualization(base_dir='output', mode='both'):
                     # 生成Biopac图表
                     print(f"  生成段 {segment} Biopac图表...")
                     
-                    # 新增：分布分析图
+                    # 分布分析图
                     plot_biopac_distribution_analysis(biopac_original, save=True)
                     if os.path.exists("biopac_distribution_analysis.png"):
                         os.rename("biopac_distribution_analysis.png", f"biopac_distribution_analysis_seg{segment}.png")
                     
                     # 无滤波图
-                    plot_combined(biopac_original, save=True)
-                    if os.path.exists("combined_excluding_sensors.png"):
-                        os.rename("combined_excluding_sensors.png", f"biopac_combined_no_filter_seg{segment}.png")
+                    #plot_combined(biopac_original, save=True)
+                    #if os.path.exists("combined_excluding_sensors.png"):
+                    #    os.rename("combined_excluding_sensors.png", f"biopac_combined_no_filter_seg{segment}.png")
                     
                     plot_subplots(biopac_original, save=True)
                     if os.path.exists("subplots_excluding_sensors.png"):
@@ -1395,7 +1395,7 @@ def calculate_average_hr(output_dir='output'):
         # 分析所有HR文件
         hr_files = []
         for i in range(1, 12):
-            filename = f"hr-{i}.csv"
+            filename = os.path.join(str(i), "Biopac", "hr.csv")
             filepath = os.path.join(output_dir, filename)
             if os.path.exists(filepath):
                 hr_files.append((i, filepath))
