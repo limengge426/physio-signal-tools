@@ -8,9 +8,12 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from datetime import datetime, timezone, timedelta
-from collections import OrderedDict
-from scipy.signal import welch, butter, filtfilt
+from collections import OrderedDict, Counter
+from scipy.signal import welch, butter, filtfilt, find_peaks
 import copy
+import warnings
+
+warnings.filterwarnings('ignore')
 
 
 # ==================== 全局配置 ====================
@@ -138,7 +141,7 @@ def get_segment_timestamps(input_dir):
                         reader = csv.DictReader(f)
                         timestamps = []
                         for row in reader:
-                            if 'timestamp' in row:  # 确保timestamp列存在
+                            if 'timestamp' in row:
                                 try:
                                     timestamps.append(float(row['timestamp']))
                                 except (ValueError, KeyError):
@@ -152,7 +155,6 @@ def get_segment_timestamps(input_dir):
                 except Exception as e:
                     print(f"Error reading timestamps from {timestamps_file}: {e}")
     
-    # 按段号排序
     segments.sort(key=lambda x: x[0])
     return segments
 
@@ -165,16 +167,14 @@ def segment_csv_files(output_dir, input_dir, segments):
     
     print(f"\nSegmenting files based on {len(segments)} time periods...")
     
-    # 查找所有生成的CSV文件
     csv_files = [f for f in os.listdir(output_dir) if f.endswith('.csv') and not '-' in f]
     
     for csv_file in csv_files:
-        base_name = csv_file[:-4]  # 去除.csv后缀
+        base_name = csv_file[:-4]
         csv_path = os.path.join(output_dir, csv_file)
         
         print(f"\nProcessing {csv_file}...")
         
-        # 读取整个CSV文件
         with open(csv_path, 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             rows = list(reader)
@@ -183,12 +183,9 @@ def segment_csv_files(output_dir, input_dir, segments):
             print(f"  No data in {csv_file}, skipping.")
             continue
         
-        # 获取列名
         fieldnames = reader.fieldnames
         
-        # 对每个时间段进行切分
         for seg_num, start_ts, end_ts in segments:
-            # 筛选在时间段内的行
             segment_rows = []
             for row in rows:
                 try:
@@ -199,28 +196,19 @@ def segment_csv_files(output_dir, input_dir, segments):
                     pass
             
             if segment_rows:
-                # 根据文件类型确定目标文件夹
                 segment_folder = os.path.join(input_dir, str(seg_num))
                 
-                # 判断文件类型并放到对应子文件夹
                 if base_name.startswith('sensor'):
-                    # HUB数据
                     target_folder = os.path.join(segment_folder, 'HUB')
-                    # 创建目标文件夹（如果不存在）
                     if not os.path.exists(target_folder):
                         os.makedirs(target_folder)
-                    # 保存切分后的文件（不带段号后缀）
                     segment_path = os.path.join(target_folder, csv_file)
                 elif base_name in ['bvp', 'spo2']:
-                    # Oximeter数据（不包括hr）
                     target_folder = os.path.join(segment_folder, 'Oximeter')
-                    # 创建目标文件夹（如果不存在）
                     if not os.path.exists(target_folder):
                         os.makedirs(target_folder)
-                    # 保存切分后的文件（不带段号后缀）
                     segment_path = os.path.join(target_folder, csv_file)
                 else:
-                    # 其他文件（包括hr）保留在output根目录，生成分段文件
                     target_folder = output_dir
                     segment_filename = f"{base_name}-{seg_num}.csv"
                     segment_path = os.path.join(target_folder, segment_filename)
@@ -249,11 +237,9 @@ def move_biopac_files_to_segments(output_dir, parent_dir):
     print("移动Biopac分段文件到对应文件夹...")
     print("="*50)
     
-    # 查找所有带段号后缀的文件
     biopac_segment_files = []
     for file in os.listdir(output_dir):
         if file.endswith('.csv') and '-' in file:
-            # 检查是否是分段文件（格式：name-数字.csv）
             parts = file.split('-')
             if len(parts) == 2:
                 name_part = parts[0]
@@ -261,7 +247,6 @@ def move_biopac_files_to_segments(output_dir, parent_dir):
                 if number_part.isdigit():
                     segment_num = int(number_part)
                     if 1 <= segment_num <= 11:
-                        # 排除sensor和已知的非Biopac文件
                         if not name_part.startswith('sensor') and name_part not in ['bvp', 'spo2']:
                             biopac_segment_files.append((file, segment_num, name_part))
     
@@ -273,28 +258,21 @@ def move_biopac_files_to_segments(output_dir, parent_dir):
     
     moved_count = 0
     for file, segment_num, name_part in biopac_segment_files:
-        # 源文件路径
         source_path = os.path.join(output_dir, file)
-        
-        # 目标段文件夹
         segment_dir = os.path.join(parent_dir, str(segment_num))
         
-        # 创建段文件夹（如果不存在）
         if not os.path.exists(segment_dir):
             os.makedirs(segment_dir)
             print(f"  创建段文件夹: {segment_dir}")
         
-        # 创建Biopac子文件夹（如果不存在）
         biopac_dir = os.path.join(segment_dir, 'Biopac')
         if not os.path.exists(biopac_dir):
             os.makedirs(biopac_dir)
             print(f"  创建Biopac文件夹: {biopac_dir}")
         
-        # 目标文件路径（去掉段号后缀）
         target_filename = f"{name_part}.csv"
         target_path = os.path.join(biopac_dir, target_filename)
         
-        # 移动文件
         try:
             os.rename(source_path, target_path)
             print(f"  移动: {file} -> {segment_num}/Biopac/{target_filename}")
@@ -310,7 +288,6 @@ def convert_biopac_to_csv(input_file, output_dir='output', utc_offset=8, auto_se
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
     
-    # 获取输入文件所在目录
     input_dir = os.path.dirname(input_file)
     if not input_dir:
         input_dir = '.'
@@ -347,20 +324,197 @@ def convert_biopac_to_csv(input_file, output_dir='output', utc_offset=8, auto_se
     print(f"Conversion complete! Processed {count} rows")
     print(f"Output files saved in: {output_dir}/")
     
-    # 自动进行时间段切分
     if auto_segment:
         segments = get_segment_timestamps(input_dir)
         if segments:
             segment_csv_files(output_dir, input_dir, segments)
-            # 新增：移动Biopac分段文件到对应文件夹
             move_biopac_files_to_segments(output_dir, input_dir)
         else:
             print("\nNo numbered folders with timestamps found for segmentation.")
 
 
+# ==================== 对比分析模块 (Fusion from comparison.py) ====================
+# --- 对比分析模块配置 ---
+COMP_WINDOW_SIZE_SECONDS = 10
+COMP_REQUIRED_VALID_WINDOWS = 100
+COMP_TARGET_CHANNEL = 'ir'
+COMP_OUTPUT_DIR_NAME = 'automated_analysis_ir_only'
+COMP_OUTPUT_FILENAME = 'comparison.jpg'
+
+# --- 对比分析模块工具函数 ---
+def comp_bandpass_filter(data, lowcut=0.5, highcut=3, fs=30, order=3):
+    """0.5-3Hz 带通滤波 (对比分析专用)"""
+    nyquist = 0.5 * fs
+    highcut = min(highcut, nyquist * 0.99)
+    if lowcut >= highcut:
+        return data
+    b, a = butter(order, [lowcut, highcut], fs=fs, btype='band')
+    return filtfilt(b, a, data)
+
+def load_comparison_data(segment_num, base_dir):
+    """加载对比分析所需的HUB和Biopac数据"""
+    data = {'hub': {}, 'biopac': {}}
+    hub_dir = os.path.join(base_dir, str(segment_num), 'HUB')
+    if os.path.exists(hub_dir):
+        for file in os.listdir(hub_dir):
+            if file.startswith('sensor') and file.endswith('.csv'):
+                name = file[:-4]
+                try:
+                    df = pd.read_csv(os.path.join(hub_dir, file))
+                    data['hub'][name] = df.dropna().reset_index(drop=True)
+                except Exception as e:
+                    print(f"读取HUB文件失败 {file}: {e}")
+    biopac_dir = os.path.join(base_dir, str(segment_num), 'Biopac')
+    if os.path.exists(biopac_dir):
+        for file in os.listdir(biopac_dir):
+            # 仅加载mean_bp
+            if file == 'mean_bp.csv':
+                name = file[:-4]
+                try:
+                    df = pd.read_csv(os.path.join(biopac_dir, file))
+                    data['biopac'][name] = df.dropna().reset_index(drop=True)
+                except Exception as e:
+                    print(f"读取Biopac文件失败 {file}: {e}")
+    return data
+
+def get_comp_peak_stats(data_series, fs):
+    """对单个通道数据进行滤波、找波峰，并返回平均间隔和波峰数 (对比分析专用)"""
+    if data_series.empty or len(data_series) < fs * 2:
+        return None, 0
+    y_filtered = comp_bandpass_filter(data_series.values, lowcut=0.5, highcut=3.0, fs=fs)
+    min_distance = int(0.4 * fs)
+    peaks, _ = find_peaks(y_filtered, height=np.percentile(y_filtered, 50), distance=min_distance)
+    if len(peaks) < 2:
+        return None, len(peaks)
+    avg_interval_samples = np.mean(np.diff(peaks))
+    avg_interval_time = avg_interval_samples / fs
+    return avg_interval_time, len(peaks)
+
+def find_data_for_comparison(segment_num, base_dir, target_channel):
+    """为对比分析寻找有效数据窗口"""
+    print(f"\n--- 正在为对比分析处理 Segment {segment_num} ---")
+    print(f"目标通道: {target_channel.upper()}")
+
+    all_data = load_comparison_data(segment_num, base_dir)
+    hub_dfs = {name: df for name, df in all_data['hub'].items() if name.startswith('sensor')}
+    biopac_df = all_data['biopac'].get('mean_bp', pd.DataFrame())
+
+    if not hub_dfs:
+        print(f"错误: 在 Segment {segment_num} 中未找到任何 sensor*.csv 文件。")
+        return []
+
+    collected_samples = []
+    
+    any_sensor_df = next(iter(hub_dfs.values())).sort_values('timestamp')
+    min_ts, max_ts = any_sensor_df['timestamp'].min(), any_sensor_df['timestamp'].max()
+    dt = np.median(np.diff(any_sensor_df['timestamp']))
+    fs = 1.0 / dt
+    print(f"检测到采样率 (fs) ≈ {fs:.2f} Hz。时间范围 [{min_ts:.2f}s, {max_ts:.2f}s]")
+    
+    current_start_time = min_ts
+
+    while current_start_time < max_ts and len(collected_samples) < COMP_REQUIRED_VALID_WINDOWS:
+        current_end_time = current_start_time + COMP_WINDOW_SIZE_SECONDS
+        if current_end_time > max_ts:
+            break
+        
+        col_idx = ['red', 'ir', 'green'].index(target_channel) + 1
+        intervals_per_device = {}
+        counts_per_device = {}
+
+        for device_name, device_df in hub_dfs.items():
+            window_df = device_df[(device_df['timestamp'] >= current_start_time) & (device_df['timestamp'] < current_end_time)]
+            if window_df.shape[1] > col_idx:
+                interval, count = get_comp_peak_stats(window_df.iloc[:, col_idx], fs)
+                if interval is not None:
+                    intervals_per_device[device_name] = interval
+                    counts_per_device[device_name] = count
+        
+        if counts_per_device:
+            count_freq = Counter(counts_per_device.values())
+            for peak_count, num_devices in count_freq.most_common():
+                if peak_count > 1 and num_devices >= 2:
+                    consistent_devices = [d for d, c in counts_per_device.items() if c == peak_count]
+                    consistent_intervals = [intervals_per_device[d] for d in consistent_devices]
+                    avg_interval = np.mean(consistent_intervals)
+                    freq = 1.0 / avg_interval
+                    
+                    window_biopac_df = biopac_df[(biopac_df['timestamp'] >= current_start_time) & (biopac_df['timestamp'] < current_end_time)]
+                    avg_bp = np.nan
+                    if not window_biopac_df.empty and window_biopac_df.shape[1] > 1:
+                        avg_bp = window_biopac_df.iloc[:, 1].mean()
+
+                    if not np.isnan(avg_bp):
+                        collected_samples.append({'frequency': freq, 'mean_bp': avg_bp})
+                        print(f"  > 找到对比样本 {len(collected_samples)}/{COMP_REQUIRED_VALID_WINDOWS} (t=[{current_start_time:.1f}s]), Freq={freq:.2f} Hz, MeanBP={avg_bp:.2f} mmHg")
+                    break
+        
+        current_start_time += COMP_WINDOW_SIZE_SECONDS
+    
+    if len(collected_samples) < COMP_REQUIRED_VALID_WINDOWS:
+        print(f"警告: 数据已耗尽，仅为通道 {target_channel.upper()} 找到 {len(collected_samples)} 个对比样本。")
+        
+    return collected_samples
+
+def plot_comparison(seg1_results, seg7_results, channel_name, save_dir):
+    """绘制对比分析图"""
+    if not seg1_results or not seg7_results:
+        print("错误: 对比分析缺少段1或段7的数据，无法生成图表。")
+        return
+
+    fig = plt.figure(figsize=(12, 8))
+    plt.style.use('seaborn-v0_8-whitegrid')
+
+    x1 = [res['frequency'] for res in seg1_results]
+    y1 = [res['mean_bp'] for res in seg1_results]
+    plt.plot(x1, y1, 'o', color='royalblue', label=f'Segment 1 ({len(x1)} windows)', markersize=8)
+
+    x2 = [res['frequency'] for res in seg7_results]
+    y2 = [res['mean_bp'] for res in seg7_results]
+    plt.plot(x2, y2, 's', color='crimson', label=f'Segment 7 ({len(x2)} windows)', markersize=8)
+
+    all_x = np.array(x1 + x2)
+    all_y = np.array(y1 + y2)
+
+    if len(all_x) > 1:
+        m, b = np.polyfit(all_x, all_y, 1)
+        x_fit = np.array([min(all_x), max(all_x)])
+        y_fit = m * x_fit + b
+        plt.plot(x_fit, y_fit, color='green', linestyle=':', linewidth=2, 
+                 label=f'Trendline (y={m:.2f}x + {b:.2f})')
+
+    plt.title(f'Frequency vs. Mean BP ({channel_name.upper()} Channel)', fontsize=16, fontweight='bold')
+    plt.xlabel('Frequency (1/t) [Hz]', fontsize=12)
+    plt.ylabel('Mean Blood Pressure (mmHg)', fontsize=12)
+    plt.legend(fontsize=10)
+    plt.tight_layout()
+
+    save_path = os.path.join(save_dir, COMP_OUTPUT_FILENAME)
+    plt.savefig(save_path, dpi=300)
+    print(f"\n对比分析图已成功保存至: {save_path}")
+    plt.close(fig) # 自动关闭
+
+def run_comparison_analysis(base_dir, save_dir):
+    """运行对比分析的总控制器"""
+    print("\n" + "="*50)
+    print("步骤 4: 运行对比分析 (Seg1 vs Seg7)")
+    print("="*50)
+    
+    seg1_plot_data = find_data_for_comparison(1, base_dir, target_channel=COMP_TARGET_CHANNEL)
+    
+    if not seg1_plot_data:
+        print("\n对比分析中止：未能从Segment 1收集到任何数据。")
+        return
+
+    seg7_plot_data = find_data_for_comparison(7, base_dir, target_channel=COMP_TARGET_CHANNEL)
+
+    plot_comparison(seg1_plot_data, seg7_plot_data, COMP_TARGET_CHANNEL, save_dir)
+    print("\n--- 对比分析完成 ---")
+
+
 # ==================== 可视化模块 ====================
 def bandpass_filter(data, lowcut=0.5, highcut=3, fs=30, order=3):
-    """0.5-3Hz 带通滤波"""
+    """0.5-3Hz 带通滤波 (主可视化模块使用)"""
     b, a = butter(order, [lowcut, highcut], fs=fs, btype='band')
     return filtfilt(b, a, data)
 
@@ -398,7 +552,6 @@ def filter_window(dfs, start_ts, end_ts):
 
 def plot_biopac_distribution_analysis(dfs_filt, save=True):
     """分析真值数据分布的拼接柱状图 - 按指定顺序排列"""
-    # 获取非sensor数据
     biopac_data = {
         name: df for name, df in dfs_filt.items()
         if name.split('-')[0] not in sensor_mapping and not df.empty
@@ -408,26 +561,17 @@ def plot_biopac_distribution_analysis(dfs_filt, save=True):
         print("No Biopac data found for distribution analysis.")
         return
     
-    # 定义显示顺序（按列排列）
-    # 第一列：bp, systolic_bp, diastolic_bp
-    # 第二列：mean_bp, hr, rsp  
-    # 第三列：cardiac_index, cardiac_output, systemic_vascular_resistance
     display_order = [
-        # 第一列
         'bp', 'systolic_bp', 'diastolic_bp',
-        # 第二列
         'mean_bp', 'hr', 'rsp',
-        # 第三列
         'cardiac_index', 'cardiac_output', 'systemic_vascular_resistance'
     ]
     
-    # 根据可用数据和显示顺序创建有序列表
     ordered_data = []
     for key in display_order:
         if key in biopac_data:
             ordered_data.append((key, biopac_data[key]))
     
-    # 添加任何不在预定义顺序中的数据
     for key, df in biopac_data.items():
         if key not in display_order:
             ordered_data.append((key, df))
@@ -436,14 +580,12 @@ def plot_biopac_distribution_analysis(dfs_filt, save=True):
     if n_datasets == 0:
         return
     
-    # 设置为3列布局
     cols = 3
     rows = math.ceil(n_datasets / cols)
     figsize = (18, 5 * rows)
     
     fig, axes = plt.subplots(rows, cols, figsize=figsize)
     
-    # 确保axes是数组格式
     if rows == 1:
         axes = axes.reshape(1, -1) if n_datasets > 1 else [axes]
     axes = axes.flatten()
@@ -453,58 +595,47 @@ def plot_biopac_distribution_analysis(dfs_filt, save=True):
     for idx, (name, df) in enumerate(ordered_data):
         ax = axes[idx]
         
-        # 获取数据列（第二列通常是数值列）
         if df.shape[1] > 1:
             data_column = df.iloc[:, 1].values
             
-            # 移除异常值（使用IQR方法）
             Q1 = np.percentile(data_column, 25)
             Q3 = np.percentile(data_column, 75)
             IQR = Q3 - Q1
             lower_bound = Q1 - 1.5 * IQR
             upper_bound = Q3 + 1.5 * IQR
             
-            # 过滤数据
             filtered_data = data_column[(data_column >= lower_bound) & (data_column <= upper_bound)]
             
-            # 生成柱状图
             n_bins = min(30, max(10, int(np.sqrt(len(filtered_data)))))
             counts, bins, patches = ax.hist(filtered_data, bins=n_bins, 
                                           color=colors[idx % len(colors)], 
                                           alpha=0.7, edgecolor='black', linewidth=0.5)
             
-            # 设置标题和标签
             clean_name = name.replace('_', ' ').title()
             ax.set_title(f'Distribution of {clean_name}', fontsize=12, fontweight='bold')
             ax.set_xlabel('Value', fontsize=10)
             ax.set_ylabel('Number', fontsize=10)
             ax.grid(True, alpha=0.3)
             
-            # 添加统计信息
             mean_val = np.mean(filtered_data)
             std_val = np.std(filtered_data)
             median_val = np.median(filtered_data)
             
-            # 在图上添加垂直线显示统计信息
             ax.axvline(mean_val, color='red', linestyle='--', alpha=0.8, linewidth=2, label=f'Mean: {mean_val:.2f}')
             ax.axvline(median_val, color='green', linestyle='--', alpha=0.8, linewidth=2, label=f'Median: {median_val:.2f}')
             
-            # 添加文本框显示统计信息
             stats_text = f'N: {len(filtered_data)}\nMean: {mean_val:.2f}\nStd: {std_val:.2f}\nMedian: {median_val:.2f}'
             ax.text(0.98, 0.98, stats_text, transform=ax.transAxes, 
                    fontsize=9, verticalalignment='top', horizontalalignment='right',
                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
             
-            # 添加图例
             ax.legend(loc='upper left', fontsize=8)
             
             print(f"  {name}: {len(filtered_data)} data points, Mean={mean_val:.2f}, Std={std_val:.2f}")
     
-    # 隐藏多余的子图
     for idx in range(n_datasets, len(axes)):
         axes[idx].axis('off')
     
-    # 设置总标题
     plt.suptitle('Biopac Data Distribution Analysis', fontsize=16, fontweight='bold', y=0.98)
     plt.tight_layout(rect=[0, 0, 1, 0.95])
     
@@ -512,12 +643,11 @@ def plot_biopac_distribution_analysis(dfs_filt, save=True):
         plt.savefig('biopac_distribution_analysis.png', dpi=300, bbox_inches='tight')
         print("Saved: biopac_distribution_analysis.png")
     
-    plt.show()
+    plt.close(fig)
 
 
 def plot_oximeter_distribution_analysis(dfs_filt, save=True):
     """分析Oximeter数据分布的拼接柱状图"""
-    # 获取Oximeter相关数据（非sensor数据）
     oximeter_data = {
         name: df for name, df in dfs_filt.items()
         if name.split('-')[0] not in sensor_mapping and not df.empty
@@ -531,7 +661,6 @@ def plot_oximeter_distribution_analysis(dfs_filt, save=True):
     if n_datasets == 0:
         return
     
-    # 计算子图布局
     if n_datasets <= 3:
         rows, cols = 1, n_datasets
         figsize = (6*cols, 5)
@@ -544,7 +673,6 @@ def plot_oximeter_distribution_analysis(dfs_filt, save=True):
     
     fig, axes = plt.subplots(rows, cols, figsize=figsize)
     
-    # 确保axes是数组格式
     if n_datasets == 1:
         axes = [axes]
     elif rows == 1:
@@ -557,58 +685,47 @@ def plot_oximeter_distribution_analysis(dfs_filt, save=True):
     for idx, (name, df) in enumerate(oximeter_data.items()):
         ax = axes[idx]
         
-        # 获取数据列（第二列通常是数值列）
         if df.shape[1] > 1:
             data_column = df.iloc[:, 1].values
             
-            # 移除异常值（使用IQR方法）
             Q1 = np.percentile(data_column, 25)
             Q3 = np.percentile(data_column, 75)
             IQR = Q3 - Q1
             lower_bound = Q1 - 1.5 * IQR
             upper_bound = Q3 + 1.5 * IQR
             
-            # 过滤数据
             filtered_data = data_column[(data_column >= lower_bound) & (data_column <= upper_bound)]
             
-            # 生成柱状图
             n_bins = min(30, max(10, int(np.sqrt(len(filtered_data)))))
             counts, bins, patches = ax.hist(filtered_data, bins=n_bins, 
                                           color=colors[idx % len(colors)], 
                                           alpha=0.7, edgecolor='black', linewidth=0.5)
             
-            # 设置标题和标签
             clean_name = name.replace('_', ' ').title()
             ax.set_title(f'Distribution of {clean_name}', fontsize=12, fontweight='bold')
             ax.set_xlabel('Value', fontsize=10)
             ax.set_ylabel('Number', fontsize=10)
             ax.grid(True, alpha=0.3)
             
-            # 添加统计信息
             mean_val = np.mean(filtered_data)
             std_val = np.std(filtered_data)
             median_val = np.median(filtered_data)
             
-            # 在图上添加垂直线显示统计信息
             ax.axvline(mean_val, color='red', linestyle='--', alpha=0.8, linewidth=2, label=f'Mean: {mean_val:.2f}')
             ax.axvline(median_val, color='green', linestyle='--', alpha=0.8, linewidth=2, label=f'Median: {median_val:.2f}')
             
-            # 添加文本框显示统计信息
             stats_text = f'N: {len(filtered_data)}\nMean: {mean_val:.2f}\nStd: {std_val:.2f}\nMedian: {median_val:.2f}'
             ax.text(0.98, 0.98, stats_text, transform=ax.transAxes, 
                    fontsize=9, verticalalignment='top', horizontalalignment='right',
                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
             
-            # 添加图例
             ax.legend(loc='upper left', fontsize=8)
             
             print(f"  {name}: {len(filtered_data)} data points, Mean={mean_val:.2f}, Std={std_val:.2f}")
     
-    # 隐藏多余的子图
     for idx in range(n_datasets, len(axes)):
         axes[idx].axis('off')
     
-    # 设置总标题
     plt.suptitle('Oximeter Data Distribution Analysis', fontsize=16, fontweight='bold', y=0.98)
     plt.tight_layout(rect=[0, 0, 1, 0.95])
     
@@ -616,14 +733,13 @@ def plot_oximeter_distribution_analysis(dfs_filt, save=True):
         plt.savefig('oximeter_distribution_analysis.png', dpi=300, bbox_inches='tight')
         print("Saved: oximeter_distribution_analysis.png")
     
-    plt.show()
+    plt.close(fig)
 
 
 def plot_combined(dfs_filt, save=True):
     """真值 + 血氧总图"""
-    plt.figure(figsize=(14, 8))
+    fig = plt.figure(figsize=(14, 8))
 
-    # 全局时间起点
     all_ts = np.concatenate([
         df['timestamp'].values
         for name, df in dfs_filt.items()
@@ -632,7 +748,7 @@ def plot_combined(dfs_filt, save=True):
     
     if len(all_ts) == 0:
         print("No non-sensor data found for combined plot.")
-        plt.close()
+        plt.close(fig)
         return
         
     t0 = all_ts.min()
@@ -652,7 +768,6 @@ def plot_combined(dfs_filt, save=True):
                  alpha=0.8,
                  label=prefix)
 
-        # 打印采样率
         if len(x) > 1:
             avg_dt = np.mean(np.diff(x))
             fs = 1/avg_dt
@@ -668,7 +783,8 @@ def plot_combined(dfs_filt, save=True):
     if save:
         plt.savefig('combined_excluding_sensors.png', dpi=300, bbox_inches='tight')
         print("Saved: combined_excluding_sensors.png")
-    plt.show()
+    
+    plt.close(fig)
 
 
 def plot_subplots(dfs_filt, save=True):
@@ -709,7 +825,8 @@ def plot_subplots(dfs_filt, save=True):
     if save:
         plt.savefig('subplots_excluding_sensors.png', dpi=300, bbox_inches='tight')
         print("Saved: subplots_excluding_sensors.png")
-    plt.show()
+    
+    plt.close(fig)
 
 
 def plot_channels_grid(dfs_filt, save=True):
@@ -732,11 +849,9 @@ def plot_channels_grid(dfs_filt, save=True):
                              figsize=(n_cols*4, n_rows*3),
                              sharex=True)
 
-    # 如果只有一行，确保axes是二维的
     if n_rows == 1:
         axes = axes.reshape(1, -1)
 
-    # 计算全局起始时间
     all_ts = np.concatenate([df['timestamp'].values for df in sensor_dfs.values()])
     t0 = all_ts.min()
 
@@ -769,7 +884,7 @@ def plot_channels_grid(dfs_filt, save=True):
         plt.savefig("channels_grid.png", dpi=300, bbox_inches="tight")
         print("Saved: channels_grid.png")
 
-    plt.show()
+    plt.close(fig)
 
 
 def plot_channels_separately(dfs_filt, save=True):
@@ -779,7 +894,6 @@ def plot_channels_separately(dfs_filt, save=True):
         if prefix not in sensor_mapping:
             continue
 
-        # 按时间排序并计算相对时间
         df_sorted = df.sort_values('timestamp')
         x = df_sorted['timestamp'].values - df_sorted['timestamp'].values.min()
 
@@ -793,7 +907,7 @@ def plot_channels_separately(dfs_filt, save=True):
 
             y = df_sorted.iloc[:, col_idx].values
 
-            plt.figure(figsize=(10, 5))
+            fig = plt.figure(figsize=(10, 5))
             plt.plot(x, y, linewidth=1.5)
             
             plt.title(f"{part} — {ch}", fontsize=14)
@@ -807,13 +921,11 @@ def plot_channels_separately(dfs_filt, save=True):
                 plt.savefig(fn, dpi=300, bbox_inches='tight')
                 print(f"Saved: {fn}")
 
-            plt.show()
-            plt.close()
+            plt.close(fig)
 
 
 def plot_all_channels_overlay_filtered(dfs_filt, save=True):
     """带滤波的五个传感器每个通道叠加总图"""
-    # 获取传感器数据并进行深拷贝以避免修改原数据
     sensor_dfs = OrderedDict()
     for name, df in dfs_filt.items():
         prefix = name.split('-')[0]
@@ -824,20 +936,17 @@ def plot_all_channels_overlay_filtered(dfs_filt, save=True):
         print("No sensor data found for filtered overlay plot.")
         return
     
-    # 对每个传感器数据进行滤波处理
     print("Applying bandpass filter to sensor data...")
     for prefix, df in sensor_dfs.items():
         if df.empty:
             continue
             
         ts = df['timestamp'].values
-        # 只保留唯一的时间戳，去掉重复值
         tsu = np.unique(ts)
         if len(tsu) < 2:
             print(f"{prefix}: 没有足够不同时间戳，跳过滤波")
             continue
             
-        # 计算相邻不同时间戳的中位数
         dt = np.median(np.diff(tsu))
         if dt <= 0:
             print(f"{prefix}: 时间戳异常 (dt={dt:.6f}), 跳过滤波")
@@ -846,21 +955,17 @@ def plot_all_channels_overlay_filtered(dfs_filt, save=True):
         fs = 1.0 / dt
         print(f"{prefix}: 采样率 ≈ {fs:.1f} Hz, Nyquist={fs/2:.1f} Hz")
 
-        # 检查采样率是否足够高以支持滤波
         nyquist = fs / 2
-        if nyquist <= 1.5:  # Need nyquist > 1.5 Hz to safely filter at 0.5-3 Hz
+        if nyquist <= 1.5:
             print(f"{prefix}: 采样率太低 (Nyquist={nyquist:.1f} Hz <= 1.5 Hz)，跳过滤波")
             continue
         
-        # 对于低采样率信号，调整滤波参数
-        if fs < 10:  # 如果采样率低于 10 Hz
-            # 确保高频截止不超过 Nyquist 频率的 0.9 倍
+        if fs < 10:
             highcut = min(3.0, 0.9 * nyquist)
             print(f"{prefix}: 调整滤波范围为 0.5-{highcut:.1f} Hz")
         else:
             highcut = 3.0
 
-        # 对各个通道进行滤波
         for col in df.columns:
             if col == 'timestamp':
                 continue
@@ -874,57 +979,46 @@ def plot_all_channels_overlay_filtered(dfs_filt, save=True):
             except Exception as e:
                 print(f"  {prefix} {col}: 滤波失败 - {str(e)}")
     
-    # 计算全局时间起点
     all_ts = np.concatenate([df['timestamp'].values for df in sensor_dfs.values()])
     t0 = all_ts.min()
     
     channels = ['red', 'ir', 'green']
     colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#FECA57']
     
-    # 创建3x1的子图布局
     fig, axes = plt.subplots(3, 1, figsize=(16, 12), sharex=True)
     
     for ch_idx, channel in enumerate(channels):
         ax = axes[ch_idx]
         
-        # 为每个通道绘制所有传感器的数据
         for sensor_idx, (prefix, df) in enumerate(sensor_dfs.items()):
             part_name = sensor_mapping[prefix]
             
-            # 检查是否有该通道的数据
-            col_idx = ch_idx + 1  # red=1, ir=2, green=3
+            col_idx = ch_idx + 1
             if df.shape[1] <= col_idx:
                 continue
                 
-            # 获取时间和信号数据
             x = df['timestamp'].values - t0
             y = df.iloc[:, col_idx].values
             
-            # 为了更好的可视化效果，可以对信号进行归一化
             if len(y) > 0:
                 y_normalized = (y - np.min(y)) / (np.max(y) - np.min(y)) if np.max(y) != np.min(y) else y
                 
-                # 绘制信号线
                 ax.plot(x, y_normalized, 
                        color=colors[sensor_idx % len(colors)], 
                        linewidth=1.5, 
                        alpha=0.8, 
                        label=f'{part_name}')
         
-        # 设置子图属性
         ax.set_title(f'{channel.upper()} Channel - All Sensors Overlay (Filtered 0.5-3Hz)', 
                     fontsize=14, fontweight='bold')
         ax.set_ylabel('Normalized Signal', fontsize=12)
         ax.grid(True, alpha=0.3)
         ax.legend(bbox_to_anchor=(1.02, 1), loc='upper left')
         
-        # 设置y轴范围
         ax.set_ylim(-0.1, 1.1)
     
-    # 设置x轴标签
     axes[-1].set_xlabel('Time since window start (s)', fontsize=12)
     
-    # 设置总标题
     plt.suptitle('Multi-Sensor Channel Overlay Visualization (Filtered)', 
                 fontsize=16, fontweight='bold')
     plt.tight_layout(rect=[0, 0, 0.85, 0.96])
@@ -933,12 +1027,11 @@ def plot_all_channels_overlay_filtered(dfs_filt, save=True):
         plt.savefig('all_channels_overlay_filtered.png', dpi=300, bbox_inches='tight')
         print("Saved: all_channels_overlay_filtered.png")
     
-    plt.show()
+    plt.close(fig)
 
 
 def plot_psd_analysis(dfs_filt, save=True):
     """PSD 频谱图"""
-    # Sensor 单通道 PSD
     sensor_items = [
         (name, df)
         for name, df in dfs_filt.items()
@@ -1011,9 +1104,8 @@ def plot_psd_analysis(dfs_filt, save=True):
         if save:
             plt.savefig('psd_sensors.png', dpi=300, bbox_inches='tight')
             print("Saved: psd_sensors.png")
-        plt.show()
+        plt.close(fig)
 
-    # Sensor 聚合网格 PSD
     if sensor_items:
         prefixes = list(sensor_dfs.keys())
         n = len(prefixes)
@@ -1044,7 +1136,6 @@ def plot_psd_analysis(dfs_filt, save=True):
             ax.grid(alpha=0.3)
             ax.legend()
 
-        # 隐藏多余
         for ax in axes[n:]:
             ax.axis('off')
 
@@ -1053,24 +1144,21 @@ def plot_psd_analysis(dfs_filt, save=True):
         if save:
             plt.savefig('psd_sensor_grid.png', dpi=300, bbox_inches='tight')
             print("Saved: psd_sensor_grid.png")
-        plt.show()
+        plt.close(fig)
 
 
-def run_visualization(base_dir='output', mode='both'):
-    """运行可视化流程 - 修改版本"""
+def run_visualization(base_dir='output'):
+    """运行可视化流程 - 全自动修改版本"""
     print("\n" + "="*50)
     print("开始可视化处理...")
     print("="*50)
     
-    # 获取父目录路径（与output同级）
     parent_dir = os.path.dirname(os.path.abspath(base_dir))
     
-    # 1. 先扫描存在的段文件夹
     available_segments = []
     for segment in range(1, 12):
         segment_dir = os.path.join(parent_dir, str(segment))
         if os.path.exists(segment_dir):
-            # 检查是否有HUB或Oximeter文件夹
             hub_path = os.path.join(segment_dir, 'HUB')
             oximeter_path = os.path.join(segment_dir, 'Oximeter')
             if os.path.exists(hub_path) or os.path.exists(oximeter_path):
@@ -1082,16 +1170,13 @@ def run_visualization(base_dir='output', mode='both'):
         
     print(f"找到 {len(available_segments)} 个数据段: {available_segments}")
     
-    # 创建visualization主文件夹（与output同级）
     vis_dir = os.path.join(parent_dir, 'visualization')
     if not os.path.exists(vis_dir):
         os.makedirs(vis_dir)
         print(f"Created visualization directory: {vis_dir}")
     
-    # 保存当前工作目录
     original_cwd = os.getcwd()
     
-    # 获取Biopac数据文件（现在从段文件夹的Biopac子文件夹读取）
     def get_biopac_files_for_segment(segment_dir):
         """获取指定段的Biopac文件"""
         biopac_path = os.path.join(segment_dir, 'Biopac')
@@ -1099,7 +1184,6 @@ def run_visualization(base_dir='output', mode='both'):
             return [f for f in os.listdir(biopac_path) if f.endswith('.csv')]
         return []
     
-    # 2. 处理每个段的数据（分别输入时间戳）
     segments_processed = 0
     for segment in available_segments:
         segment_dir = os.path.join(parent_dir, str(segment))
@@ -1108,25 +1192,37 @@ def run_visualization(base_dir='output', mode='both'):
         print(f"处理段 {segment} 数据...")
         print("="*50)
         
-        # 为每个段单独输入时间戳
-        print(f"请为段 {segment} 输入时间窗口:")
-        try:
-            start_ts = float(input(f"Enter start timestamp for segment {segment} (Unix seconds): "))
-            end_ts = float(input(f"Enter end timestamp for segment {segment} (Unix seconds): "))
-        except ValueError:
-            print(f"无效的时间戳输入，跳过段 {segment}")
+        # --- 自动化时间戳获取 ---
+        start_ts, end_ts = None, None
+        sensor2_path = os.path.join(segment_dir, 'HUB', 'sensor2.csv')
+        if os.path.exists(sensor2_path):
+            try:
+                df_sensor2 = pd.read_csv(sensor2_path)
+                if not df_sensor2.empty and 'timestamp' in df_sensor2.columns:
+                    first_ts = df_sensor2['timestamp'].iloc[0]
+                    start_ts = first_ts + 60
+                    end_ts = start_ts + 10
+                    print(f"段 {segment} 自动获取时间窗口: {start_ts:.3f}s - {end_ts:.3f}s (基于sensor2.csv)")
+                else:
+                    print(f"警告: {sensor2_path} 为空或无时间戳列。")
+            except Exception as e:
+                print(f"读取 {sensor2_path} 失败: {e}")
+        else:
+            print(f"警告: 未找到 {sensor2_path}，无法自动获取段 {segment} 的时间戳。")
+
+        if start_ts is None:
+            print(f"跳过段 {segment} 的可视化，因为无法确定时间窗口。")
             continue
-        
-        # 创建段级visualization文件夹
+        # --- 时间戳自动化结束 ---
+
         segment_vis_dir = os.path.join(vis_dir, str(segment))
         if not os.path.exists(segment_vis_dir):
             os.makedirs(segment_vis_dir)
         
-        # 2.1 处理Biopac数据（从段文件夹的Biopac子文件夹读取）
+        # 处理Biopac数据
         biopac_files = get_biopac_files_for_segment(segment_dir)
         if biopac_files:
             print(f"\n处理段 {segment} - Biopac数据...")
-            
             biopac_dfs = {}
             biopac_source_path = os.path.join(segment_dir, 'Biopac')
             for file in biopac_files:
@@ -1134,64 +1230,34 @@ def run_visualization(base_dir='output', mode='both'):
                 try:
                     df = pd.read_csv(os.path.join(biopac_source_path, file))
                     biopac_dfs[name] = df.dropna().reset_index(drop=True)
-                    print(f"  Loaded {file} with {len(df)} rows")
                 except Exception as e:
                     print(f"Error reading {file}: {e}")
             
             if biopac_dfs:
-                # 过滤时间窗口
                 biopac_filt = filter_window(biopac_dfs, start_ts, end_ts)
                 biopac_original = copy.deepcopy(biopac_filt)
-                
-                # 检查过滤后是否有数据
                 has_data = any(not df.empty for df in biopac_filt.values())
                 if has_data:
-                    # 应用滤波
                     apply_filtering(biopac_filt)
-                    
-                    # 创建Biopac子文件夹
                     biopac_dir = os.path.join(segment_vis_dir, 'Biopac')
-                    if not os.path.exists(biopac_dir):
-                        os.makedirs(biopac_dir)
-                    
+                    if not os.path.exists(biopac_dir): os.makedirs(biopac_dir)
                     os.chdir(biopac_dir)
-                    
-                    # 生成Biopac图表
                     print(f"  生成段 {segment} Biopac图表...")
-                    
-                    # 分布分析图
                     plot_biopac_distribution_analysis(biopac_original, save=True)
-                    if os.path.exists("biopac_distribution_analysis.png"):
-                        os.rename("biopac_distribution_analysis.png", f"biopac_distribution_analysis_seg{segment}.png")
-                    
-                    # 无滤波图
-                    #plot_combined(biopac_original, save=True)
-                    #if os.path.exists("combined_excluding_sensors.png"):
-                    #    os.rename("combined_excluding_sensors.png", f"biopac_combined_no_filter_seg{segment}.png")
-                    
+                    if os.path.exists("biopac_distribution_analysis.png"): os.rename("biopac_distribution_analysis.png", f"biopac_distribution_analysis_seg{segment}.png")
                     plot_subplots(biopac_original, save=True)
-                    if os.path.exists("subplots_excluding_sensors.png"):
-                        os.rename("subplots_excluding_sensors.png", f"biopac_subplots_no_filter_seg{segment}.png")
-                    
-                    # 滤波图
+                    if os.path.exists("subplots_excluding_sensors.png"): os.rename("subplots_excluding_sensors.png", f"biopac_subplots_no_filter_seg{segment}.png")
                     plot_combined(biopac_filt, save=True)
-                    if os.path.exists("combined_excluding_sensors.png"):
-                        os.rename("combined_excluding_sensors.png", f"biopac_combined_filtered_seg{segment}.png")
-                    
+                    if os.path.exists("combined_excluding_sensors.png"): os.rename("combined_excluding_sensors.png", f"biopac_combined_filtered_seg{segment}.png")
                     plot_subplots(biopac_filt, save=True)
-                    if os.path.exists("subplots_excluding_sensors.png"):
-                        os.rename("subplots_excluding_sensors.png", f"biopac_subplots_filtered_seg{segment}.png")
-                    
+                    if os.path.exists("subplots_excluding_sensors.png"): os.rename("subplots_excluding_sensors.png", f"biopac_subplots_filtered_seg{segment}.png")
                     os.chdir(original_cwd)
-                    print(f"  段 {segment} Biopac图表已保存至: {biopac_dir}")
-                else:
-                    print(f"  段 {segment} Biopac数据在指定时间窗口内无数据")
+                else: print(f"  段 {segment} Biopac数据在指定时间窗口内无数据")
         
-        # 2.2 处理Oximeter数据（移除滤波图）
+        # 处理Oximeter数据
         oximeter_source_path = os.path.join(segment_dir, 'Oximeter')
         if os.path.exists(oximeter_source_path):
             print(f"\n处理段 {segment} - Oximeter数据...")
-            
             oximeter_files = [f for f in os.listdir(oximeter_source_path) if f.endswith('.csv')]
             if oximeter_files:
                 oximeter_dfs = {}
@@ -1200,52 +1266,30 @@ def run_visualization(base_dir='output', mode='both'):
                     try:
                         df = pd.read_csv(os.path.join(oximeter_source_path, file))
                         oximeter_dfs[name] = df.dropna().reset_index(drop=True)
-                        print(f"  Loaded {file} with {len(df)} rows")
-                    except Exception as e:
-                        print(f"  Error reading {file}: {e}")
+                    except Exception as e: print(f"  Error reading {file}: {e}")
                 
                 if oximeter_dfs:
-                    # 过滤时间窗口
                     oximeter_filt = filter_window(oximeter_dfs, start_ts, end_ts)
                     oximeter_original = copy.deepcopy(oximeter_filt)
-                    
-                    # 检查过滤后是否有数据
                     has_data = any(not df.empty for df in oximeter_filt.values())
                     if has_data:
-                        # 创建Oximeter子文件夹
                         oximeter_vis_dir = os.path.join(segment_vis_dir, 'Oximeter')
-                        if not os.path.exists(oximeter_vis_dir):
-                            os.makedirs(oximeter_vis_dir)
-                        
+                        if not os.path.exists(oximeter_vis_dir): os.makedirs(oximeter_vis_dir)
                         os.chdir(oximeter_vis_dir)
-                        
-                        # 生成Oximeter图表（只生成无滤波图 + 分布分析图）
                         print(f"  生成段 {segment} Oximeter图表...")
-                        
-                        # 新增：分布分析图
                         plot_oximeter_distribution_analysis(oximeter_original, save=True)
-                        if os.path.exists("oximeter_distribution_analysis.png"):
-                            os.rename("oximeter_distribution_analysis.png", f"oximeter_distribution_analysis_seg{segment}.png")
-                        
-                        # 无滤波图
+                        if os.path.exists("oximeter_distribution_analysis.png"): os.rename("oximeter_distribution_analysis.png", f"oximeter_distribution_analysis_seg{segment}.png")
                         plot_combined(oximeter_original, save=True)
-                        if os.path.exists("combined_excluding_sensors.png"):
-                            os.rename("combined_excluding_sensors.png", f"oximeter_combined_no_filter_seg{segment}.png")
-                        
+                        if os.path.exists("combined_excluding_sensors.png"): os.rename("combined_excluding_sensors.png", f"oximeter_combined_no_filter_seg{segment}.png")
                         plot_subplots(oximeter_original, save=True)
-                        if os.path.exists("subplots_excluding_sensors.png"):
-                            os.rename("subplots_excluding_sensors.png", f"oximeter_subplots_no_filter_seg{segment}.png")
-                        
+                        if os.path.exists("subplots_excluding_sensors.png"): os.rename("subplots_excluding_sensors.png", f"oximeter_subplots_no_filter_seg{segment}.png")
                         os.chdir(original_cwd)
-                        print(f"  段 {segment} Oximeter图表已保存至: {oximeter_vis_dir}")
-                    else:
-                        print(f"  段 {segment} Oximeter数据在指定时间窗口内无数据")
+                    else: print(f"  段 {segment} Oximeter数据在指定时间窗口内无数据")
         
-        # 2.3 处理HUB数据（sensor数据）
+        # 处理HUB数据
         hub_source_path = os.path.join(segment_dir, 'HUB')
         if os.path.exists(hub_source_path):
             print(f"\n处理段 {segment} - HUB数据...")
-            
             hub_files = [f for f in os.listdir(hub_source_path) if f.endswith('.csv')]
             if hub_files:
                 hub_dfs = {}
@@ -1254,85 +1298,32 @@ def run_visualization(base_dir='output', mode='both'):
                     try:
                         df = pd.read_csv(os.path.join(hub_source_path, file))
                         hub_dfs[name] = df.dropna().reset_index(drop=True)
-                        print(f"  Loaded {file} with {len(df)} rows")
-                    except Exception as e:
-                        print(f"  Error reading {file}: {e}")
+                    except Exception as e: print(f"  Error reading {file}: {e}")
                 
                 if hub_dfs:
-                    # 过滤时间窗口
                     hub_filt = filter_window(hub_dfs, start_ts, end_ts)
                     hub_original = copy.deepcopy(hub_filt)
-                    
-                    # 检查过滤后是否有数据
                     has_data = any(not df.empty for df in hub_filt.values())
                     if has_data:
-                        # 创建HUB子文件夹
                         hub_vis_dir = os.path.join(segment_vis_dir, 'HUB')
-                        if not os.path.exists(hub_vis_dir):
-                            os.makedirs(hub_vis_dir)
-                        
+                        if not os.path.exists(hub_vis_dir): os.makedirs(hub_vis_dir)
                         os.chdir(hub_vis_dir)
-                        
-                        # 生成HUB图表
                         print(f"  生成段 {segment} HUB图表...")
-                        
                         plot_channels_grid(hub_original, save=True)
-                        if os.path.exists("channels_grid.png"):
-                            os.rename("channels_grid.png", f"hub_channels_grid_seg{segment}.png")
-                        
+                        if os.path.exists("channels_grid.png"): os.rename("channels_grid.png", f"hub_channels_grid_seg{segment}.png")
                         plot_all_channels_overlay_filtered(hub_original, save=True)
-                        if os.path.exists("all_channels_overlay_filtered.png"):
-                            os.rename("all_channels_overlay_filtered.png", f"hub_channels_overlay_seg{segment}.png")
-                        
+                        if os.path.exists("all_channels_overlay_filtered.png"): os.rename("all_channels_overlay_filtered.png", f"hub_channels_overlay_seg{segment}.png")
                         plot_psd_analysis(hub_filt, save=True)
-                        if os.path.exists("psd_sensors.png"):
-                            os.rename("psd_sensors.png", f"hub_psd_sensors_seg{segment}.png")
-                        if os.path.exists("psd_sensor_grid.png"):
-                            os.rename("psd_sensor_grid.png", f"hub_psd_grid_seg{segment}.png")
-                        
+                        if os.path.exists("psd_sensors.png"): os.rename("psd_sensors.png", f"hub_psd_sensors_seg{segment}.png")
+                        if os.path.exists("psd_sensor_grid.png"): os.rename("psd_sensor_grid.png", f"hub_psd_grid_seg{segment}.png")
                         os.chdir(original_cwd)
-                        print(f"  段 {segment} HUB图表已保存至: {hub_vis_dir}")
-                    else:
-                        print(f"  段 {segment} HUB数据在指定时间窗口内无数据")
+                    else: print(f"  段 {segment} HUB数据在指定时间窗口内无数据")
         
         segments_processed += 1
     
     print(f"\n" + "="*60)
     print(f"可视化完成! 处理了 {segments_processed} 个段")
     print(f"所有图表已保存至: {vis_dir}")
-    print(f"文件夹结构:")
-    print(f"├── {vis_dir}/")
-    for i in available_segments:
-        segment_path = os.path.join(vis_dir, str(i))
-        if os.path.exists(segment_path):
-            print(f"│   ├── {i}/")
-            if os.path.exists(os.path.join(segment_path, 'Biopac')):
-                print(f"│   │   ├── Biopac/")
-            if os.path.exists(os.path.join(segment_path, 'HUB')):
-                print(f"│   │   ├── HUB/")
-            if os.path.exists(os.path.join(segment_path, 'Oximeter')):
-                print(f"│   │   └── Oximeter/")
-    print("="*60)
-    
-    # 在可视化流程最后添加心率分析
-    print("\n" + "="*60)
-    print("步骤 3: 心率分析")
-    print("="*60)
-    
-    # 获取父目录路径以便查找output文件夹
-    parent_dir = os.path.dirname(os.path.abspath(base_dir))
-    output_path = os.path.join(parent_dir, 'output')
-    
-    # 检查output文件夹是否存在
-    if os.path.exists(output_path):
-        calculate_average_hr(output_path)
-    else:
-        # 如果在父目录没找到，尝试使用传入的base_dir
-        calculate_average_hr(base_dir)
-    
-    print("\n" + "="*60)
-    print("所有分析步骤已完成！")
-    print("="*60)
 
 
 def apply_filtering(dfs_filt):
@@ -1342,13 +1333,11 @@ def apply_filtering(dfs_filt):
             continue
 
         ts = df['timestamp'].values
-        # 只保留唯一的时间戳，去掉重复值
         tsu = np.unique(ts)
         if len(tsu) < 2:
             print(f"{name}: 没有足够不同时间戳，跳过滤波")
             continue
             
-        # 计算相邻不同时间戳的中位数
         dt = np.median(np.diff(tsu))
         if dt <= 0:
             print(f"{name}: 时间戳异常 (dt={dt:.6f}), 跳过滤波")
@@ -1357,13 +1346,11 @@ def apply_filtering(dfs_filt):
         fs = 1.0 / dt
         print(f"{name}: 采样率 ≈ {fs:.1f} Hz, Nyquist={fs/2:.1f} Hz")
 
-        # 检查采样率是否足够高以支持滤波
         nyquist = fs / 2
         if nyquist <= 1.5:
             print(f"{name}: 采样率太低 (Nyquist={nyquist:.1f} Hz <= 1.5 Hz)，跳过滤波")
             continue
         
-        # 对于低采样率信号，调整滤波参数
         if fs < 10:
             highcut = min(3.0, 0.9 * nyquist)
             print(f"{name}: 调整滤波范围为 0.5-{highcut:.1f} Hz")
@@ -1374,122 +1361,74 @@ def apply_filtering(dfs_filt):
             if col == 'timestamp':
                 continue
             try:
-                dfs_filt[name][col] = bandpass_filter(
+                # 使用 copy() 避免 SettingWithCopyWarning
+                df_copy = dfs_filt[name].copy()
+                df_copy[col] = bandpass_filter(
                     df[col].values,
                     lowcut=0.5,
                     highcut=highcut,
                     fs=fs)
+                dfs_filt[name] = df_copy
             except Exception as e:
                 print(f"{name} {col}: 滤波失败 - {str(e)}")
 
 
-def calculate_average_hr(output_dir='output'):
-    """计算平均心率"""
+def calculate_average_hr(base_dir):
+    """自动计算所有段的平均心率"""
     print("\n" + "="*50)
-    print("心率分析")
+    print("心率分析 (自动模式)")
     print("="*50)
     
-    file_number = input("请输入HR文件编号 (1-11,或输入 'all' 分析所有文件): ")
+    hr_files = []
+    parent_dir = os.path.dirname(os.path.abspath(base_dir))
+    for i in range(1, 12):
+        filepath = os.path.join(parent_dir, str(i), "Biopac", "hr.csv")
+        if os.path.exists(filepath):
+            hr_files.append((i, filepath))
+
+    if not hr_files:
+        print("错误:在任何段文件夹的 'Biopac' 子目录中没有找到hr.csv文件")
+        return
     
-    if file_number.lower() == 'all':
-        # 分析所有HR文件
-        hr_files = []
-        for i in range(1, 12):
-            filename = os.path.join(str(i), "Biopac", "hr.csv")
-            filepath = os.path.join(output_dir, filename)
-            if os.path.exists(filepath):
-                hr_files.append((i, filepath))
-        
-        if not hr_files:
-            print("错误:没有找到任何HR文件")
-            return
-        
-        print(f"\n找到 {len(hr_files)} 个HR文件")
-        print("-" * 50)
-        
-        all_results = []
-        for num, filepath in hr_files:
-            try:
-                df = pd.read_csv(filepath)
-                if 'hr' in df.columns:
-                    average_hr = df['hr'].mean()
-                    all_results.append({
-                        'segment': num,
-                        'file': f"hr-{num}.csv",
-                        'data_points': len(df),
-                        'avg_hr': average_hr
-                    })
-                    print(f"段 {num}: 平均心率 = {average_hr:.2f} BPM ({len(df)} 数据点)")
-            except Exception as e:
-                print(f"段 {num}: 读取错误 - {str(e)}")
-        
-        if all_results:
-            print("-" * 50)
-            print("\n汇总统计:")
-            total_hr = sum(r['avg_hr'] for r in all_results)
-            overall_avg = total_hr / len(all_results)
-            print(f"所有段的平均心率: {overall_avg:.2f} BPM")
-            
-            # 找出最高和最低
-            max_hr = max(all_results, key=lambda x: x['avg_hr'])
-            min_hr = min(all_results, key=lambda x: x['avg_hr'])
-            print(f"最高平均心率: 段 {max_hr['segment']} - {max_hr['avg_hr']:.2f} BPM")
-            print(f"最低平均心率: 段 {min_hr['segment']} - {min_hr['avg_hr']:.2f} BPM")
+    print(f"\n找到 {len(hr_files)} 个HR文件进行分析...")
+    print("-" * 50)
     
-    else:
-        # 分析单个文件
+    all_results = []
+    for num, filepath in hr_files:
         try:
-            num = int(file_number)
-            if num < 1 or num > 11:
-                print("错误:请输入1-11之间的数字")
-                return
-        except ValueError:
-            print("错误：请输入有效的数字或 'all'")
-            return
-        
-        # 构建文件路径
-        filename = f"hr-{num}.csv"
-        filepath = os.path.join(output_dir, filename)
-        
-        # 检查文件是否存在
-        if not os.path.exists(filepath):
-            print(f"错误：文件 {filepath} 不存在")
-            return
-        
-        try:
-            # 读取CSV文件
             df = pd.read_csv(filepath)
-            
-            # 检查文件格式
-            if 'hr' not in df.columns:
-                print("错误：文件中没有找到'hr'列")
-                return
-            
-            # 计算平均心率
-            average_hr = df['hr'].mean()
-            
-            # 输出结果
-            print(f"\n文件: {filename}")
-            print(f"总数据点: {len(df)}")
-            print(f"平均心率: {average_hr:.2f} BPM")
-            
-            # 额外统计
-            print(f"最小心率: {df['hr'].min():.2f} BPM")
-            print(f"最大心率: {df['hr'].max():.2f} BPM")
-            print(f"心率标准差: {df['hr'].std():.2f} BPM")
-            
+            if 'hr' in df.columns and not df['hr'].empty:
+                average_hr = df['hr'].mean()
+                all_results.append({
+                    'segment': num,
+                    'file': os.path.basename(filepath),
+                    'data_points': len(df),
+                    'avg_hr': average_hr
+                })
+                print(f"段 {num}: 平均心率 = {average_hr:.2f} BPM ({len(df)} 数据点)")
+            else:
+                 print(f"段 {num}: 文件 {filepath} 为空或无 'hr' 列")
         except Exception as e:
-            print(f"读取文件时出错: {str(e)}")
-
-
-# ==================== 心率分析模块 ====================
+            print(f"段 {num}: 读取错误 - {str(e)}")
+    
+    if all_results:
+        print("-" * 50)
+        print("\n汇总统计:")
+        total_hr = sum(r['avg_hr'] for r in all_results)
+        overall_avg = total_hr / len(all_results)
+        print(f"所有段的平均心率: {overall_avg:.2f} BPM")
+        
+        max_hr = max(all_results, key=lambda x: x['avg_hr'])
+        min_hr = min(all_results, key=lambda x: x['avg_hr'])
+        print(f"最高平均心率: 段 {max_hr['segment']} - {max_hr['avg_hr']:.2f} BPM")
+        print(f"最低平均心率: 段 {min_hr['segment']} - {min_hr['avg_hr']:.2f} BPM")
 
 
 # ==================== 主程序 ====================
 def main():
     """主程序入口"""
     parser = argparse.ArgumentParser(
-        description='综合生理信号处理脚本 - Biopac同步与可视化',
+        description='综合生理信号处理脚本 - Biopac同步与自动化分析',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     
@@ -1499,16 +1438,13 @@ def main():
                         help='输出目录 (默认: output)')
     parser.add_argument('-t', '--timezone', type=int, default=8, 
                         help='UTC时差,单位为小时 (默认: 8)')
-    parser.add_argument('--vis-mode', choices=['combined', 'subplots', 'both'], 
-                        default='both', help='可视化模式 (默认: both)')
     
     args = parser.parse_args()
     
     print("\n" + "="*60)
-    print("生理信号处理系统 - Biopac同步与可视化")
+    print("生理信号处理系统 - Biopac同步与自动化分析")
     print("="*60)
     
-    # 检查输入文件是否存在
     if not os.path.exists(args.input_file):
         print(f"错误：输入文件 {args.input_file} 不存在")
         return
@@ -1520,15 +1456,28 @@ def main():
         print("="*50)
         convert_biopac_to_csv(args.input_file, args.output, args.timezone)
         
-        # Step 2: 数据可视化
+        # Step 2: 自动化数据可视化
         print("\n" + "="*50)
-        print("步骤 2: 数据可视化")
+        print("步骤 2: 数据可视化 (自动模式)")
         print("="*50)
-        run_visualization(args.output, args.vis_mode)
+        run_visualization(args.output)
         
+        # Step 3: 自动化心率分析
+        print("\n" + "="*60)
+        print("步骤 3: 心率分析 (自动模式)")
+        print("="*60)
+        calculate_average_hr(args.output)
+        
+        # Step 4: 运行新增的对比分析
+        parent_dir = os.path.dirname(os.path.abspath(args.output))
+        vis_dir = os.path.join(parent_dir, 'visualization')
+        if not os.path.exists(vis_dir): os.makedirs(vis_dir)
+        run_comparison_analysis(parent_dir, vis_dir)
+
         print("\n" + "="*60)
         print("所有处理步骤已完成！")
-        print(f"输出文件保存在: {args.output}/")
+        print(f"主要输出保存在: {args.output}/")
+        print(f"所有图表保存在: {vis_dir}/")
         print("="*60)
         
     except KeyboardInterrupt:
